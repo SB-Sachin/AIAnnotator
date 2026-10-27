@@ -126,9 +126,9 @@ struct HomeView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(.secondary)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
             Text("Drop a reading here").font(.title.weight(.semibold))
             Text("A PDF, or photos of textbook pages. Everything runs on your Mac with Ollama.")
                 .foregroundStyle(.secondary)
