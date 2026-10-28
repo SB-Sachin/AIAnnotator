@@ -12,6 +12,7 @@ struct RunOptions {
     var mode: RunMode
     var preset: HighlightPreset
     var template: NoteTemplate
+    var density: HighlightDensity
     var model: String
 }
 
@@ -75,6 +76,11 @@ final class AppModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "lastTemplate") }
     }
 
+    var lastDensity: HighlightDensity {
+        get { HighlightDensity(rawValue: UserDefaults.standard.string(forKey: "lastDensity") ?? "") ?? .light }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "lastDensity") }
+    }
+
     // MARK: Readings
 
     func open(_ urls: [URL]) {
@@ -98,6 +104,7 @@ final class AppModel: ObservableObject {
         lastMode = options.mode
         lastPresetID = options.preset.id
         lastTemplateID = options.template.id
+        lastDensity = options.density
         let s = Session(urls: run.urls, options: options)
         s.onSaved = { [weak self] in self?.reloadLibrary() }
         session = s
@@ -113,6 +120,7 @@ final class AppModel: ObservableObject {
         let s = Session(item: item, store: libraryStore, preset: palette)
         s.onSaved = { [weak self] in self?.reloadLibrary() }
         session = s
+        selection = id
     }
 
     func newReading() {

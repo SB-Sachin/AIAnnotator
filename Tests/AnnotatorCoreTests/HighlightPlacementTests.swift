@@ -29,6 +29,11 @@ struct HighlightPlacementTests {
         let highlights = page.annotations.filter(PDFHighlighter.isHighlight)
         #expect(highlights.count == 2)
         #expect(highlights.allSatisfy { ($0.quadrilateralPoints?.count ?? 0) >= 4 })
+        // Reading a highlight back gives exactly the quoted words, which is what the annotation list shows.
+        #expect(Set(highlights.map(PDFHighlighter.text(of:))) == [
+            "The mitochondria is the powerhouse of the cell",
+            "translating messenger RNA into chains of amino acids",
+        ])
         #expect(page.annotations.contains { ($0.type ?? "").contains("FreeText") || ($0.type ?? "").contains("Text") })
 
         // Annotations survive a save/reload, so they show up in Preview too.

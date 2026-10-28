@@ -86,19 +86,28 @@ public enum QuoteMatcher {
             }
         }
 
-        // Fuzzy: anchor on the head and tail of the quote.
-        let anchor = min(30, max(8, q.count / 3))
-        guard q.count >= 16 else { return nil }
+        // Fuzzy: anchor on the head and tail of the quote, and only accept a span of about the
+        // quote's length. Of several candidates, take the one closest in length.
+        let anchor = min(30, max(12, q.count / 3))
+        guard q.count >= 24 else { return nil }
         let head = Array(q.prefix(anchor)), tail = Array(q.suffix(anchor))
+        let minLen = Int(Double(q.count) * 0.85), maxLen = Int(Double(q.count) * 1.2) + 4
+        var best: (start: Int, end: Int, diff: Int)?
         var searchFrom = 0
         while let a = indexOf(head, in: page.chars, from: searchFrom) {
-            let maxEnd = a + Int(Double(q.count) * 1.3) + 10
-            if let b = indexOf(tail, in: page.chars, from: a + anchor), b + tail.count <= maxEnd {
-                return range(page, a, b + tail.count - 1)
+            var tailFrom = a + anchor
+            while let b = indexOf(tail, in: page.chars, from: tailFrom) {
+                let len = b + tail.count - a
+                if len > maxLen { break }
+                if len >= minLen {
+                    let diff = abs(len - q.count)
+                    if best == nil || diff < best!.diff { best = (a, b + tail.count - 1, diff) }
+                }
+                tailFrom = b + 1
             }
             searchFrom = a + 1
         }
-        return nil
+        return best.map { range(page, $0.start, $0.end) }
     }
 
     private static func range(_ n: Normalized, _ first: Int, _ last: Int) -> NSRange {

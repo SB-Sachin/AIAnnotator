@@ -26,6 +26,7 @@ final class Session: ObservableObject, Identifiable {
     @Published var status = ""
     @Published var errorMessage: String?
     @Published var missedHighlights = 0
+    @Published private(set) var entries: [AnnotationEntry] = []
     @Published var selectedAnnotation: PDFAnnotation?
     @Published var hasTextSelection = false
     @Published var dirty = false
@@ -60,6 +61,8 @@ final class Session: ObservableObject, Identifiable {
         templateLayout = item.templateLayout
         document = PDFDocument(url: store.pdfURL(for: item.id))
         notes = store.loadNotes(for: item.id) ?? ""
+        dirty = false
+        annotationsChanged(markDirty: false)
     }
 
     var showsNotes: Bool { mode.wantsNotes || !notes.isEmpty }
@@ -78,8 +81,9 @@ final class Session: ObservableObject, Identifiable {
                 guard let doc = PDFDocument(data: data) else { throw IngestError.unreadable(self.title) }
                 self.document = doc
                 try await self.process(doc, options: options, client: client)
-                self.status = self.missedHighlights > 0
-                    ? "Done. \(self.missedHighlights) suggested highlight(s) couldn't be matched to the page text and were skipped."
+                let count = self.entries.count
+                self.status = options.mode.wantsHighlights
+                    ? "Done · \(count) highlight\(count == 1 ? "" : "s") on \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s")"
                     : "Done"
             } catch {
                 guard let self else { return }
@@ -115,16 +119,19 @@ final class Session: ObservableObject, Identifiable {
             let text = page.string ?? ""
             if !options.mode.wantsNotes && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
 
-            let req = PromptBuilder.pageRequest(mode: options.mode, preset: options.preset, pageText: text,
-                                                pageNumber: i + 1, pageCount: count)
+            let sentences = PageSentences(text)
+            let req = PromptBuilder.pageRequest(mode: options.mode, preset: options.preset, density: options.density,
+                                                sentences: sentences, pageNumber: i + 1, pageCount: count)
             let images = vision ? Ingest.pageImage(page).map { [$0] } ?? [] : []
             let result = try await client.chat(model: options.model, system: req.system, user: req.user,
                                                images: images, schema: req.schema, numCtx: req.numCtx,
                                                as: PageResult.self)
             if options.mode.wantsHighlights, let highlights = result.highlights {
-                let placement = PDFHighlighter.place(highlights, on: page, preset: options.preset)
+                let placement = PDFHighlighter.place(highlights, on: page, preset: options.preset,
+                                                     density: options.density, sentences: sentences)
                 missedHighlights += placement.missed.count
                 pdfView?.annotationsChanged(on: page)
+                annotationsChanged(markDirty: false)
             }
             if let digest = result.digest { digests.append((i + 1, digest)) }
         }
@@ -164,47 +171,82 @@ final class Session: ObservableObject, Identifiable {
 
     // MARK: Editing highlights
 
+    func annotationsChanged(markDirty: Bool = true) {
+        if let document { entries = AnnotationIndex.entries(in: document, palette: palette) }
+        if markDirty { dirty = true }
+    }
+
     func highlightSelection(as category: HighlightCategory) {
         guard let selection = pdfView?.currentSelection else { return }
+        var added: PDFAnnotation?
         for page in selection.pages {
-            PDFHighlighter.highlight(selection, on: page, color: category.color, contents: category.name)
+            added = PDFHighlighter.highlight(selection, on: page, color: category.color, contents: category.name) ?? added
             pdfView?.annotationsChanged(on: page)
         }
         pdfView?.clearSelection()
         hasTextSelection = false
-        dirty = true
+        annotationsChanged()
+        selectedAnnotation = added
     }
 
-    func recolorSelected(_ category: HighlightCategory) {
-        guard let ann = selectedAnnotation else { return }
+    /// Selects a highlight; `reveal` scrolls the page to it and briefly outlines it.
+    func select(_ ann: PDFAnnotation?, reveal: Bool = false) {
+        selectedAnnotation = ann
+        guard reveal, let ann, let page = ann.page, let view = pdfView else { return }
+        view.go(to: ann.bounds.insetBy(dx: -60, dy: -120), on: page)
+        let flash = PDFAnnotation(bounds: ann.bounds.insetBy(dx: -3, dy: -3), forType: .square, withProperties: nil)
+        flash.color = NSColor(hex: 0x5B4BD6)
+        let border = PDFBorder()
+        border.lineWidth = 2
+        flash.border = border
+        page.addAnnotation(flash)
+        Task { @MainActor [weak view] in
+            try? await Task.sleep(for: .milliseconds(1100))
+            page.removeAnnotation(flash)
+            view?.annotationsChanged(on: page)
+        }
+    }
+
+    func recolor(_ ann: PDFAnnotation, as category: HighlightCategory) {
         let type = (ann.type ?? "").replacingOccurrences(of: "/", with: "")
         let alpha: CGFloat = type == "Highlight" ? PDFHighlighter.highlightAlpha : type == "FreeText" ? 0.22 : 1
+        let note = AnnotationIndex.split(ann.contents).note
         ann.color = category.color.withAlphaComponent(alpha)
         if type == "Highlight" {
-            let note = ann.contents?.split(separator: ":", maxSplits: 1).dropFirst().first
-            ann.contents = note.map { "\(category.name):\($0)" } ?? category.name
+            ann.contents = note.isEmpty ? category.name : "\(category.name): \(note)"
+            for margin in marginNotes(of: ann, note: note) { margin.color = category.color.withAlphaComponent(0.22) }
         }
         refresh(ann)
     }
 
-    func setSelectedNote(_ text: String) {
-        guard let ann = selectedAnnotation, ann.contents != text else { return }
-        ann.contents = text
+    /// Changes a highlight's note, keeping its visible margin note in step.
+    func setNote(_ text: String, for ann: PDFAnnotation) {
+        let (label, old) = AnnotationIndex.split(ann.contents)
+        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard note != old else { return }
+        for margin in marginNotes(of: ann, note: old) {
+            if note.isEmpty { margin.page?.removeAnnotation(margin) } else { margin.contents = note }
+        }
+        ann.contents = note.isEmpty ? label : "\(label): \(note)"
         refresh(ann)
     }
 
-    func deleteSelected() {
-        guard let ann = selectedAnnotation, let page = ann.page else { return }
-        page.removeAnnotation(ann)
-        selectedAnnotation = nil
+    func delete(_ ann: PDFAnnotation) {
+        guard let page = ann.page else { return }
+        PDFHighlighter.remove(ann)
+        if selectedAnnotation === ann { selectedAnnotation = nil }
         pdfView?.annotationsChanged(on: page)
-        dirty = true
+        annotationsChanged()
+    }
+
+    private func marginNotes(of ann: PDFAnnotation, note: String) -> [PDFAnnotation] {
+        guard !note.isEmpty, let page = ann.page else { return [] }
+        return page.annotations.filter { !PDFHighlighter.isHighlight($0) && $0.userName == PDFHighlighter.author && $0.contents == note }
     }
 
     private func refresh(_ ann: PDFAnnotation) {
         if let page = ann.page { pdfView?.annotationsChanged(on: page) }
-        objectWillChange.send()
-        dirty = true
+        annotationsChanged()
     }
 
     // MARK: Export

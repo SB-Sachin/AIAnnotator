@@ -20,8 +20,9 @@ struct AIAnnotatorApp: App {
         WindowGroup("AI Annotator") {
             ContentView()
                 .environmentObject(app)
-                .frame(minWidth: 1000, minHeight: 640)
+                .frame(minWidth: 1040, minHeight: 680)
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Reading") { app.newReading() }.keyboardShortcut("n")
@@ -45,6 +46,7 @@ struct AIAnnotatorApp: App {
         Settings {
             SettingsView()
                 .environmentObject(app)
+                .tint(Theme.brand)
         }
     }
 }

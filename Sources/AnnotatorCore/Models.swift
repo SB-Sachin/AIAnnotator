@@ -174,3 +174,56 @@ extension NSColor {
                       Int((c.blueComponent * 255).rounded()))
     }
 }
+
+/// How much of each page gets highlighted. The app enforces these limits on top of the prompt,
+/// since models tend to over-highlight.
+public enum HighlightDensity: String, Codable, CaseIterable, Identifiable, Sendable {
+    case light, balanced, thorough
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .light: return "Light"
+        case .balanced: return "Balanced"
+        case .thorough: return "Thorough"
+        }
+    }
+    public var summary: String {
+        switch self {
+        case .light: return "Only the essentials, about 2–4 per page"
+        case .balanced: return "Key ideas plus support, about 3–6 per page"
+        case .thorough: return "Detailed study marks, about 5–9 per page"
+        }
+    }
+    /// Most highlights on a full page.
+    public var cap: Int {
+        switch self {
+        case .light: return 4
+        case .balanced: return 6
+        case .thorough: return 9
+        }
+    }
+    /// Roughly one highlight per this many words of page text.
+    var wordsPerHighlight: Int {
+        switch self {
+        case .light: return 110
+        case .balanced: return 75
+        case .thorough: return 50
+        }
+    }
+    /// Largest share of the page's characters that may be highlighted.
+    var coverage: Double {
+        switch self {
+        case .light: return 0.08
+        case .balanced: return 0.13
+        case .thorough: return 0.2
+        }
+    }
+    var promptHint: String {
+        switch self {
+        case .light: return "Mark only the few points a student must remember, usually 2–4 on a full page."
+        case .balanced: return "Mark the key ideas and their most important support, usually 3–6 on a full page."
+        case .thorough: return "Mark ideas, support and key details for close study, usually 5–9 on a full page."
+        }
+    }
+}

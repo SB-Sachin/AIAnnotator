@@ -6,11 +6,11 @@ struct PromptTests {
     let preset = BuiltIns.highlightPresets[0]
 
     @Test func schemaMatchesMode() {
-        let both = PromptBuilder.pageRequest(mode: .both, preset: preset, pageText: "x", pageNumber: 1, pageCount: 1)
+        let both = PromptBuilder.pageRequest(mode: .both, preset: preset, sentences: PageSentences("x"), pageNumber: 1, pageCount: 1)
         #expect(both.schema["required"] as? [String] == ["highlights", "digest"])
-        let notes = PromptBuilder.pageRequest(mode: .notes, preset: preset, pageText: "x", pageNumber: 1, pageCount: 1)
+        let notes = PromptBuilder.pageRequest(mode: .notes, preset: preset, sentences: PageSentences("x"), pageNumber: 1, pageCount: 1)
         #expect(notes.schema["required"] as? [String] == ["digest"])
-        let hl = PromptBuilder.pageRequest(mode: .annotations, preset: preset, pageText: "x", pageNumber: 1, pageCount: 1)
+        let hl = PromptBuilder.pageRequest(mode: .annotations, preset: preset, sentences: PageSentences("x"), pageNumber: 1, pageCount: 1)
         #expect(hl.schema["required"] as? [String] == ["highlights"])
         #expect(!hl.system.contains("DIGEST"))
     }

@@ -17,6 +17,10 @@ public struct RawHighlight: Decodable, Hashable {
     public var quote: String
     public var category: String
     public var note: String?
+    /// 1-based number of the sentence the quote comes from.
+    public var sentence: Int?
+    /// 3 = essential, 2 = useful, 1 = minor.
+    public var importance: Int?
 }
 
 public struct PageDigest: Codable, Hashable {
@@ -32,13 +36,13 @@ public struct PageDigest: Codable, Hashable {
 public enum PromptBuilder {
     static let pageTextLimit = 12_000
 
-    public static func pageRequest(mode: RunMode, preset: HighlightPreset?, pageText: String,
-                                   pageNumber: Int, pageCount: Int) -> ModelRequest {
+    public static func pageRequest(mode: RunMode, preset: HighlightPreset?, density: HighlightDensity = .balanced,
+                                   sentences: PageSentences, pageNumber: Int, pageCount: Int) -> ModelRequest {
         var tasks: [String] = []
         var props: [String: Any] = [:]
         var required: [String] = []
         if mode.wantsHighlights, let preset {
-            tasks.append(highlightTask(preset))
+            tasks.append(highlightTask(preset, density: density))
             props["highlights"] = highlightSchema(preset)
             required.append("highlights")
         }
@@ -55,14 +59,13 @@ public enum PromptBuilder {
 
         Respond with JSON only.
         """
-        let text = pageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clipped = text.count > pageTextLimit ? String(text.prefix(pageTextLimit)) : text
+        let numbered = sentences.numbered(limit: pageTextLimit)
         let user = """
         Page \(pageNumber) of \(pageCount).
 
-        EXTRACTED PAGE TEXT (copy quotes from this exactly):
+        PAGE TEXT, one numbered sentence per line (copy quotes from these exactly):
         <<<
-        \(clipped.isEmpty ? "(no extractable text on this page)" : clipped)
+        \(numbered.isEmpty ? "(no extractable text on this page)" : numbered)
         >>>
         """
         return ModelRequest(system: system, user: user,
@@ -70,11 +73,11 @@ public enum PromptBuilder {
                             numCtx: 8192)
     }
 
-    static func highlightTask(_ preset: HighlightPreset) -> String {
+    static func highlightTask(_ preset: HighlightPreset, density: HighlightDensity) -> String {
         let cats = preset.categories.map { "- \($0.id): \($0.name) — \($0.description)" }.joined(separator: "\n")
         let noteRule = preset.marginStyle == .none
             ? "\"note\" must be an empty string."
-            : "\"note\" is a short margin comment (at most 15 words) saying why the passage matters or what it connects to."
+            : "\"note\" is a short margin comment (at most 12 words) saying why the passage matters or what it connects to."
         return """
         TASK: HIGHLIGHT the page in the style "\(preset.name)".
         \(preset.instructions)
@@ -82,11 +85,20 @@ public enum PromptBuilder {
         Categories (put the id in "category"):
         \(cats)
 
-        Rules:
-        - "quote" must be copied character-for-character from the EXTRACTED PAGE TEXT: one contiguous span of 4 to 25 words. No ellipses, no paraphrasing, no added words.
-        - Highlight the key phrase or clause, not whole paragraphs. Be selective: together, highlights should cover well under a third of the page's text.
-        - Choose at most \(preset.maxPerPage) highlights. Prefer fewer, high-value highlights. Highlights must not overlap.
-        - Skip running headers, page numbers, captions and citations unless they are essential.
+        How to choose:
+        - Be very selective. \(density.promptHint) Never more than \(min(preset.maxPerPage, density.cap)). \
+        A page with little substance gets 0 or 1.
+        - Only mark what a student would need when reviewing. Skip introductions, transitions, restatements, \
+        headings, page numbers, captions and citations.
+        - Each highlight marks the key phrase inside ONE numbered sentence. Put that sentence's number in "sentence".
+        - "quote" is copied character-for-character from that sentence: one contiguous span of 3 to 20 words. \
+        Pick the core phrase, not the whole sentence (unless the sentence is short). No ellipses, no paraphrasing, \
+        no added words.
+        - A highlight must make sense on its own when re-read later. For a name, date or number, include the words \
+        that say what it is (e.g. "restoration of the monarchy under King Charles II in 1660", not just "1660").
+        - At most one highlight per sentence. Highlights never overlap.
+        - "importance": 3 = essential (would be on the test), 2 = useful, 1 = minor. Order highlights by importance.
+        - Pick the category whose description fits best; if none fits well, leave the passage unmarked.
         - \(noteRule)
         - If the page has no meaningful text, return an empty list.
         """
@@ -98,11 +110,13 @@ public enum PromptBuilder {
             "items": [
                 "type": "object",
                 "properties": [
+                    "sentence": ["type": "integer"],
                     "quote": ["type": "string"],
                     "category": ["type": "string", "enum": preset.categories.map(\.id)],
+                    "importance": ["type": "integer", "enum": [1, 2, 3]],
                     "note": ["type": "string"],
-                ],
-                "required": ["quote", "category", "note"],
+                ] as [String: Any],
+                "required": ["sentence", "quote", "category", "importance", "note"],
             ] as [String: Any],
         ]
     }
