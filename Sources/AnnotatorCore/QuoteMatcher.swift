@@ -1,7 +1,7 @@
 import Foundation
 
 /// Finds a model-produced quote inside page text, tolerating differences in whitespace,
-/// case, curly quotes, dashes, ligatures and hyphenated line breaks.
+/// case, quotation marks, dashes, ligatures and hyphenated line breaks.
 /// Returns an NSRange in UTF-16 units so it can be handed straight to `PDFPage.selection(for:)`.
 public enum QuoteMatcher {
     struct Normalized {
@@ -50,8 +50,10 @@ public enum QuoteMatcher {
 
     private static func mapped(_ c: Character) -> [Character] {
         switch c {
-        case "\u{2018}", "\u{2019}", "\u{201B}", "`", "\u{2032}": return ["'"]
-        case "\u{201C}", "\u{201D}", "\u{201F}", "\u{2033}": return ["\""]
+        // Quotation marks and apostrophes are dropped on both sides: models often leave them out of quotes,
+        // and OCR reads them inconsistently ('' vs ").
+        case "'", "\"", "\u{2018}", "\u{2019}", "\u{201B}", "`", "\u{2032}",
+             "\u{201C}", "\u{201D}", "\u{201F}", "\u{2033}", "\u{00AB}", "\u{00BB}": return []
         case "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2212}": return ["-"]
         case "\u{FB01}": return ["f", "i"]
         case "\u{FB02}": return ["f", "l"]

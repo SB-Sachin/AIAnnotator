@@ -53,4 +53,10 @@ struct QuoteMatcherTests {
         let text = "Café 🌍 culture: the café was central to Parisian intellectual life."
         #expect(matched("central to Parisian intellectual life", in: text) == "central to Parisian intellectual life")
     }
+
+    @Test func ignoresQuotationMarksTheModelLeftOut() throws {
+        let page = "or else the social order, as ''gentleman,'' \"yeoman,\" or \u{201C}laborer,\u{201D} mattered."
+        let r = try #require(QuoteMatcher.find("gentleman, yeoman, or laborer", in: page))
+        #expect((page as NSString).substring(with: r) == "gentleman,'' \"yeoman,\" or \u{201C}laborer")
+    }
 }

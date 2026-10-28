@@ -55,18 +55,30 @@ struct OllamaEndToEndTests {
         print("Wrote \(out.path)")
     }
 
-    /// Highlights chosen pages of a real PDF: OLLAMA_E2E_PDF=path, OLLAMA_E2E_PAGES=1-based list like "30,31",
-    /// OLLAMA_E2E_DENSITY=light|balanced|thorough. Writes the annotated pages to $TMPDIR/aiannotator-e2e/real.pdf.
+    /// Highlights a real reading. OLLAMA_E2E_PDF is a PDF (with OLLAMA_E2E_PAGES, a 1-based list like "30,31")
+    /// or a folder of page photos, which go through the same OCR as the app. OLLAMA_E2E_DENSITY=light|balanced|thorough,
+    /// OLLAMA_E2E_PRESET=index of the built-in highlight style. Writes $TMPDIR/aiannotator-e2e/real.pdf.
     @Test(.timeLimit(.minutes(20)), .enabled(if: ProcessInfo.processInfo.environment["OLLAMA_E2E_PDF"] != nil))
     func highlightsRealPages() async throws {
         let env = ProcessInfo.processInfo.environment
-        let source = try #require(PDFDocument(url: URL(fileURLWithPath: env["OLLAMA_E2E_PDF"]!)))
-        let numbers = (env["OLLAMA_E2E_PAGES"] ?? "1").split(separator: ",").compactMap { Int($0) }
+        let input = URL(fileURLWithPath: env["OLLAMA_E2E_PDF"]!)
         let density = HighlightDensity(rawValue: env["OLLAMA_E2E_DENSITY"] ?? "") ?? .light
-        let preset = BuiltIns.highlightPresets[0]
-        let doc = PDFDocument()
-        for n in numbers {
-            if let page = source.page(at: n - 1)?.copy() as? PDFPage { doc.insert(page, at: doc.pageCount) }
+        let preset = BuiltIns.highlightPresets[Int(env["OLLAMA_E2E_PRESET"] ?? "") ?? 0]
+        let doc: PDFDocument
+        var numbers: [Int]
+        if input.hasDirectoryPath {
+            let photos = try FileManager.default.contentsOfDirectory(at: input, includingPropertiesForKeys: nil)
+                .filter(Ingest.isSupported)
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            doc = try #require(PDFDocument(data: try Ingest.makePDFData(from: photos)))
+            numbers = Array(1...doc.pageCount)
+        } else {
+            let source = try #require(PDFDocument(url: input))
+            numbers = (env["OLLAMA_E2E_PAGES"] ?? "1").split(separator: ",").compactMap { Int($0) }
+            doc = PDFDocument()
+            for n in numbers {
+                if let page = source.page(at: n - 1)?.copy() as? PDFPage { doc.insert(page, at: doc.pageCount) }
+            }
         }
         for i in 0..<doc.pageCount {
             let page = try #require(doc.page(at: i))
@@ -82,7 +94,11 @@ struct OllamaEndToEndTests {
             let marked = page.annotations.filter(PDFHighlighter.isHighlight).map(PDFHighlighter.text(of:))
             let markedWords = marked.reduce(0) { $0 + $1.split(separator: " ").count }
             print("Page \(numbers[i]): \(words) words, \(sentences.sentences.count) sentences. Model suggested \(raw.count); placed \(placement.placed), dropped \(placement.dropped), missed \(placement.missed.count). Highlighted \(markedWords) words (\(words > 0 ? markedWords * 100 / words : 0)%).")
-            for m in marked { print("   • \(m)") }
+            print("   text: \(PageSentences.clean(page.string ?? "").prefix(220))…")
+            for (m, ann) in zip(marked, page.annotations.filter(PDFHighlighter.isHighlight)) {
+                let boxes = PDFHighlighter.lineRects(of: ann)
+                print("   • [\(boxes.count) box\(boxes.count == 1 ? "" : "es"), tallest \(Int(boxes.map(\.height).max() ?? 0))pt] \(m)")
+            }
             for m in placement.missed { print("   ✗ missed: \(m)") }
             #expect(placement.placed <= density.cap)
         }

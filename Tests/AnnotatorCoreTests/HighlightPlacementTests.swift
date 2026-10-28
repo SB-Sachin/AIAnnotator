@@ -39,7 +39,15 @@ struct HighlightPlacementTests {
         // Annotations survive a save/reload, so they show up in Preview too.
         let saved = try #require(doc.dataRepresentation())
         let reloaded = try #require(PDFDocument(data: saved))
-        #expect(reloaded.page(at: 0)?.annotations.filter(PDFHighlighter.isHighlight).count == 2)
+        let reloadedHighlights = try #require(reloaded.page(at: 0)?.annotations.filter(PDFHighlighter.isHighlight))
+        #expect(reloadedHighlights.count == 2)
+        // The saved quote survives too, and so does reading it back from the page for highlights without one.
+        #expect(reloadedHighlights.map { $0.value(forAnnotationKey: PDFHighlighter.quoteKey) as? String }.contains("The mitochondria is the powerhouse of the cell"))
+        for ann in reloadedHighlights { ann.removeValue(forAnnotationKey: PDFHighlighter.quoteKey) }
+        #expect(Set(reloadedHighlights.map(PDFHighlighter.text(of:))) == [
+            "The mitochondria is the powerhouse of the cell",
+            "translating messenger RNA into chains of amino acids",
+        ])
     }
 
     @Test func ocrsPhotoAndHighlightsIt() throws {
@@ -58,13 +66,45 @@ struct HighlightPlacementTests {
         #expect(Ingest.pageImage(page) != nil)
     }
 
-    private func renderTextImage(_ text: String) -> CGImage? {
-        let size = NSSize(width: 1600, height: 500)
+    /// A tilted phone photo used to give one giant box per paragraph and glue lines together ("townsmade").
+    @Test func tiltedPhotoGetsLineSizedHighlights() throws {
+        let image = try #require(renderTextImage("""
+        The founders of Massachusetts sought to eliminate extremes of rank from their society, yet they were \
+        very far from being egalitarian. Most towns deliberately preserved inequalities of status and wealth \
+        within a narrow range, and most communities attempted to preserve the system of social ranks which \
+        had existed within the small villages of East Anglia.
+        """, size: NSSize(width: 1700, height: 1100), degrees: 4))
+        let doc = try #require(PDFDocument(data: try Ingest.ocrPage(image: image)))
+        let page = try #require(doc.page(at: 0))
+        let text = PageSentences.clean(page.string ?? "")
+        // Words at line ends stay separate from the next line's first word.
+        #expect(text.contains("Most towns deliberately preserved"))
+        #expect(text.contains("status and wealth within a narrow range"))
+
+        let result = PDFHighlighter.place([RawHighlight(quote: "deliberately preserved inequalities of status and wealth",
+                                                        category: "claim", note: "", sentence: 2, importance: 3)],
+                                          on: page, preset: preset)
+        #expect(result.placed == 1)
+        let ann = try #require(page.annotations.first(where: PDFHighlighter.isHighlight))
+        let boxes = PDFHighlighter.lineRects(of: ann)
+        let lineHeight = page.bounds(for: .mediaBox).width / 1700 * 46 * 1.25
+        #expect(boxes.allSatisfy { $0.height < lineHeight * 1.6 }, "boxes: \(boxes), line ≈ \(lineHeight)")
+        #expect(PDFHighlighter.text(of: ann) == "deliberately preserved inequalities of status and wealth")
+    }
+
+    private func renderTextImage(_ text: String, size: NSSize = NSSize(width: 1600, height: 500),
+                                 degrees: CGFloat = 0) -> CGImage? {
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.white.setFill()
             rect.fill()
-            (text as NSString).draw(in: rect.insetBy(dx: 60, dy: 80),
-                                    withAttributes: [.font: NSFont.systemFont(ofSize: 48), .foregroundColor: NSColor.black])
+            let t = NSAffineTransform()
+            t.translateX(by: rect.midX, yBy: rect.midY)
+            t.rotate(byDegrees: degrees)
+            t.translateX(by: -rect.midX, yBy: -rect.midY)
+            t.concat()
+            (text as NSString).draw(in: rect.insetBy(dx: 90, dy: 110),
+                                    withAttributes: [.font: NSFont.systemFont(ofSize: degrees == 0 ? 48 : 46),
+                                                     .foregroundColor: NSColor.black])
             return true
         }
         var r = CGRect(origin: .zero, size: size)

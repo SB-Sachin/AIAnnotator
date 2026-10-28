@@ -7,6 +7,8 @@ import PDFKit
 public enum PDFHighlighter {
     public static let author = "AIAnnotator"
     public static let highlightAlpha: CGFloat = 0.45
+    /// Custom annotation key holding the highlighted text, so the list can show it exactly.
+    static let quoteKey = PDFAnnotationKey(rawValue: "/AIQuote")
 
     public struct Placement {
         public var placed: Int = 0
@@ -75,6 +77,8 @@ public enum PDFHighlighter {
         }
         ann.contents = contents
         ann.userName = author
+        let quote = PageSentences.clean(selection.string ?? "")
+        if !quote.isEmpty { ann.setValue(quote, forAnnotationKey: quoteKey) }
         page.addAnnotation(ann)
         return ann
     }
@@ -124,8 +128,10 @@ public enum PDFHighlighter {
         }
     }
 
-    /// The page text under a highlight annotation, read as one selection from its first line to its last.
+    /// The highlighted text: saved with the highlight when this app made it, otherwise read from the page
+    /// as one selection from its first line to its last.
     public static func text(of ann: PDFAnnotation) -> String {
+        if let saved = ann.value(forAnnotationKey: quoteKey) as? String, !saved.isEmpty { return saved }
         guard let page = ann.page else { return "" }
         let lines = lineRects(of: ann).sorted { abs($0.midY - $1.midY) > 2 ? $0.midY > $1.midY : $0.minX < $1.minX }
         guard let first = lines.first, let last = lines.last,
@@ -158,10 +164,11 @@ public enum PDFHighlighter {
 
         let font = NSFont.systemFont(ofSize: 7.5)
         let width = min(space - 14, 150)
-        let measured = (note as NSString).boundingRect(with: CGSize(width: width - 6, height: 400),
+        // PDFKit pads free-text boxes, so measure narrower and add room, or the last line gets cut off.
+        let measured = (note as NSString).boundingRect(with: CGSize(width: width - 14, height: 400),
                                                        options: [.usesLineFragmentOrigin],
                                                        attributes: [.font: font]).height
-        let height = ceil(measured) + 6
+        let height = ceil(measured) + 12
         let x = right >= left ? column.maxX + 8 : pageBox.minX + (left - width) / 2
         var box = CGRect(x: x, y: rect.maxY - height, width: width, height: height)
         while occupied.contains(where: { $0.intersects(box) }), box.minY > pageBox.minY + height {

@@ -44,6 +44,8 @@ Data lives in `~/Library/Application Support/AIAnnotator/` (`Library/` for readi
   3–24 words each, and within the density budget (a share of the page's words and a per-page cap). Models
   over-highlight, so the app enforces these limits itself rather than trusting the prompt.
 - Highlight line boxes are trimmed so stacked lines never overlap and darken.
+- Photos are cropped and flattened like a scan, then rotated so text lines are level. Apple Vision's OCR text is laid
+  out word by word at each word's position as an invisible text layer, so highlights follow the printed lines.
 - Highlights are standard PDF annotations, so they show up and can be edited in Preview and other PDF apps.
 - Notes are built in two passes: a per-page digest, then one call that fills the chosen template. The result is
   Markdown, which is what you edit and what the exporters read.
