@@ -23,7 +23,7 @@ struct RunSheet: View {
             Divider().opacity(0.5)
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    section("What should it make?") {
+                    OptionSection("What should it make?") {
                         HStack(spacing: 10) {
                             ForEach(RunMode.allCases) { m in
                                 ChoiceCard(selected: mode == m, action: { mode = m }) {
@@ -43,44 +43,12 @@ struct RunSheet: View {
                     }
 
                     if mode.wantsHighlights {
-                        section("Highlight style") {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
-                                ForEach(app.highlightPresets) { p in
-                                    ChoiceCard(selected: presetID == p.id, action: { presetID = p.id }) {
-                                        VStack(alignment: .leading, spacing: 7) {
-                                            HStack(spacing: 4) {
-                                                ForEach(p.categories) { CategoryDot(color: $0.color, size: 10) }
-                                            }
-                                            Text(p.name).font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            Text(p.summary).font(.system(size: 11)).foregroundStyle(.secondary)
-                                                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        section("How much to highlight") {
-                            VStack(alignment: .leading, spacing: 7) {
-                                PillPicker(options: HighlightDensity.allCases.map { ($0, $0.label) }, selection: $density)
-                                Text(density.summary).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
+                        OptionSection("Highlight style") { PresetGrid(presets: app.highlightPresets, selection: $presetID) }
+                        OptionSection("How much to highlight") { DensityPicker(selection: $density) }
                     }
 
                     if mode.wantsNotes {
-                        section("Note template") {
-                            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                                ForEach(app.noteTemplates) { t in
-                                    ChoiceCard(selected: templateID == t.id, action: { templateID = t.id }) {
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(t.name).font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            Text(t.summary).font(.system(size: 11)).foregroundStyle(.secondary)
-                                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        OptionSection("Note template") { TemplateGrid(templates: app.noteTemplates, selection: $templateID) }
                     }
 
                     if app.status == .notRunning {
@@ -118,13 +86,7 @@ struct RunSheet: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Picker(selection: $model) {
-                ForEach(modelChoices, id: \.self) { Text($0).tag($0) }
-            } label: {
-                Image(systemName: "cpu")
-            }
-            .fixedSize()
-            .help("Ollama model")
+            ModelPicker(choices: modelChoices, selection: $model)
             Text("About 20–60 seconds a page").font(.caption).foregroundStyle(.tertiary)
             Spacer()
             Button("Cancel", role: .cancel) { dismiss() }
@@ -142,12 +104,89 @@ struct RunSheet: View {
             .disabled(!canStart)
         }
     }
+}
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+struct OptionSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             SectionLabel(title)
-            content()
+            content
         }
+    }
+}
+
+struct PresetGrid: View {
+    let presets: [HighlightPreset]
+    @Binding var selection: String
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
+            ForEach(presets) { p in
+                ChoiceCard(selected: selection == p.id, action: { selection = p.id }) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 4) {
+                            ForEach(p.categories) { CategoryDot(color: $0.color, size: 10) }
+                        }
+                        Text(p.name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                        Text(p.summary).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct DensityPicker: View {
+    @Binding var selection: HighlightDensity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            PillPicker(options: HighlightDensity.allCases.map { ($0, $0.label) }, selection: $selection)
+            Text(selection.summary).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct TemplateGrid: View {
+    let templates: [NoteTemplate]
+    @Binding var selection: String
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            ForEach(templates) { t in
+                ChoiceCard(selected: selection == t.id, action: { selection = t.id }) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(t.name).font(.system(size: 13, weight: .semibold, design: .rounded))
+                        Text(t.summary).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ModelPicker: View {
+    let choices: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        Picker(selection: $selection) {
+            ForEach(choices, id: \.self) { Text($0).tag($0) }
+        } label: {
+            Image(systemName: "cpu")
+        }
+        .fixedSize()
+        .help("Ollama model")
     }
 }
 

@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
     @Published var library: [ReadingItem] = []
     @Published var session: Session?
     @Published var pending: PendingRun?
+    @Published var redoRequest: RedoRequest?
     @Published var selection: UUID?
 
     let client = OllamaClient()
@@ -113,6 +114,24 @@ final class AppModel: ObservableObject {
         s.start(urls: run.urls, options: options, client: client)
     }
 
+    func requestRedo(highlights: Bool) {
+        guard let session, !session.isRunning, session.document != nil else { return }
+        redoRequest = RedoRequest(highlights: highlights)
+        Task { await refreshOllama() }
+    }
+
+    func performRedo(on session: Session, highlights: Bool, rereadPhotos: Bool, options: RunOptions) {
+        redoRequest = nil
+        if highlights {
+            lastPresetID = options.preset.id
+            lastDensity = options.density
+        } else {
+            lastTemplateID = options.template.id
+        }
+        session.redo(Session.Job(highlights: highlights, notes: !highlights, options: options, rereadPhotos: rereadPhotos),
+                     client: client)
+    }
+
     func openItem(_ id: UUID?) {
         guard let id, session?.id != id, let item = library.first(where: { $0.id == id }) else { return }
         saveCurrentIfDirty()
@@ -189,3 +208,4 @@ final class AppModel: ObservableObject {
             .split(separator: "-").joined(separator: "-")
     }
 }
+

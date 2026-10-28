@@ -9,6 +9,8 @@ public enum PDFHighlighter {
     public static let highlightAlpha: CGFloat = 0.45
     /// Custom annotation key holding the highlighted text, so the list can show it exactly.
     static let quoteKey = PDFAnnotationKey(rawValue: "/AIQuote")
+    /// Marks highlights the reader made, which a redo keeps.
+    static let manualKey = PDFAnnotationKey(rawValue: "/AIManual")
 
     public struct Placement {
         public var placed: Int = 0
@@ -24,7 +26,13 @@ public enum PDFHighlighter {
         let plan = HighlightPlanner.plan(highlights, sentences: sentences, density: density, maxPerPage: preset.maxPerPage)
         var result = Placement(placed: 0, missed: plan.missed, dropped: plan.dropped)
         var notesPlaced: [CGRect] = []
+        let existing = page.annotations.filter(isHighlight).flatMap(lineRects(of:))
         for h in plan.highlights {
+            // Never draw over a highlight that's already there (such as one the reader made).
+            if let selection = page.selection(for: h.range), overlaps(selection, on: page, existing) {
+                result.dropped += 1
+                continue
+            }
             guard let selection = page.selection(for: h.range) else {
                 result.missed.append((sentences.text as NSString).substring(with: h.range))
                 continue
@@ -49,7 +57,7 @@ public enum PDFHighlighter {
     /// line boxes are trimmed so they never stack on neighbouring lines or other highlights.
     @discardableResult
     public static func highlight(_ selection: PDFSelection, on page: PDFPage, color: NSColor,
-                                 contents: String?) -> PDFAnnotation? {
+                                 contents: String?, manual: Bool = false) -> PDFAnnotation? {
         var lines = selection.selectionsByLine()
             .filter { $0.pages.contains(page) }
             .map { $0.bounds(for: page) }
@@ -79,8 +87,26 @@ public enum PDFHighlighter {
         ann.userName = author
         let quote = PageSentences.clean(selection.string ?? "")
         if !quote.isEmpty { ann.setValue(quote, forAnnotationKey: quoteKey) }
+        if manual { ann.setValue("yes", forAnnotationKey: manualKey) }
         page.addAnnotation(ann)
         return ann
+    }
+
+    static func overlaps(_ selection: PDFSelection, on page: PDFPage, _ rects: [CGRect]) -> Bool {
+        selection.selectionsByLine().map { $0.bounds(for: page) }.contains { line in
+            rects.contains { sameLine(line, $0) && line.intersection($0).width > 1 }
+        }
+    }
+
+    public static func isManual(_ ann: PDFAnnotation) -> Bool {
+        ann.value(forAnnotationKey: manualKey) != nil
+    }
+
+    /// Removes this app's generated highlights and margin notes from a page, keeping the reader's own highlights.
+    public static func removeGenerated(on page: PDFPage) {
+        for ann in page.annotations where ann.userName == author && !isManual(ann) {
+            removeWithPopup(ann)
+        }
     }
 
     /// Two boxes on the same text line overlap mostly vertically; boxes on adjacent lines only slightly.
@@ -195,9 +221,16 @@ public enum PDFHighlighter {
         if isHighlight(ann), !note.isEmpty {
             for other in page.annotations where other !== ann && other.userName == author && !isHighlight(other)
                 && other.contents == note {
-                page.removeAnnotation(other)
+                removeWithPopup(other)
             }
         }
+        removeWithPopup(ann)
+    }
+
+    /// PDFKit gives sticky notes a separate popup annotation; remove it too so nothing is left behind.
+    static func removeWithPopup(_ ann: PDFAnnotation) {
+        guard let page = ann.page else { return }
+        if let popup = ann.popup { page.removeAnnotation(popup) }
         page.removeAnnotation(ann)
     }
 

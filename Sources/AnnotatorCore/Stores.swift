@@ -71,7 +71,18 @@ public struct PresetStore: Sendable {
     }
 }
 
-/// Each reading is a folder: item.json, document.pdf (with annotations), notes.md.
+/// One page's digest, kept with a reading so its notes can be rewritten without re-reading every page.
+public struct PageDigestEntry: Codable, Hashable, Sendable {
+    public var page: Int
+    public var digest: PageDigest
+
+    public init(page: Int, digest: PageDigest) {
+        self.page = page
+        self.digest = digest
+    }
+}
+
+/// Each reading is a folder: item.json, document.pdf (with annotations), notes.md, digests.json.
 public struct LibraryStore: Sendable {
     public let root: URL
 
@@ -97,6 +108,17 @@ public struct LibraryStore: Sendable {
         try encoder.encode(item).write(to: dir.appendingPathComponent("item.json"), options: .atomic)
         if let pdfData { try pdfData.write(to: pdfURL(for: item.id), options: .atomic) }
         if let notes { try notes.write(to: notesURL(for: item.id), atomically: true, encoding: .utf8) }
+    }
+
+    public func saveDigests(_ digests: [PageDigestEntry], for id: UUID) throws {
+        let url = folder(for: id).appendingPathComponent("digests.json")
+        if digests.isEmpty { try? FileManager.default.removeItem(at: url); return }
+        try encoder.encode(digests).write(to: url, options: .atomic)
+    }
+
+    public func loadDigests(for id: UUID) -> [PageDigestEntry] {
+        guard let data = try? Data(contentsOf: folder(for: id).appendingPathComponent("digests.json")) else { return [] }
+        return (try? decoder.decode([PageDigestEntry].self, from: data)) ?? []
     }
 
     public func loadNotes(for id: UUID) -> String? {

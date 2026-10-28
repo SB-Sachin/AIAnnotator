@@ -25,13 +25,20 @@ page images; switch models in Settings. While developing, `swift run AIAnnotator
    - Select text on the page and pick a color to add your own highlight (it replaces any highlight under it).
    - Click a highlight, on the page or in the list, to recolor it, edit its note, or delete it.
    - Notes can be edited as Markdown.
-5. **Save** (⌘S) to the library, or **Export** an annotated PDF, Markdown notes, or a formatted notes PDF.
+5. Not happy with the result? **Redo** (in the reading's header, or the Reading menu) re-runs the highlights (⇧⌘R) or
+   the notes (⌥⌘R), optionally with a different style, amount, template or model.
+   - Redoing highlights replaces the AI's highlights; highlights you added yourself are kept.
+   - Redoing notes reuses the pages already read, so it takes one model call (under a minute).
+   - **Undo Last Redo** brings back the previous version.
+   - For readings made from photos before the photo fix, turn on *Re-read photographed pages* to rebuild their text.
+6. **Save** (⌘S) to the library, or **Export** an annotated PDF, Markdown notes, or a formatted notes PDF.
 
 Built-in note templates: Cornell, Outline, Key terms + summary, Study guide / Q&A.
 Built-in highlight styles: Color-coded study, Margin commentary, Literary analysis.
 To make your own, go to Settings → *Highlight Styles* / *Note Templates* and choose **Duplicate**.
 
 Data lives in `~/Library/Application Support/AIAnnotator/` (`Library/` for readings, `Presets/` for custom styles).
+Each reading keeps its annotated PDF, its notes, and the per-page digests its notes were written from.
 
 ## How it works
 

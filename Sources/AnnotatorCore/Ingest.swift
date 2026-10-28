@@ -31,13 +31,19 @@ public enum Ingest {
     /// Combines PDFs and photos (in the given order) into one PDF. Photos become pages with an
     /// invisible OCR text layer so they can be highlighted like a digital PDF.
     public static func makePDFData(from urls: [URL]) throws -> Data {
+        try makePDF(from: urls).data
+    }
+
+    /// Like `makePDFData`, also returning which 0-based pages came from photos.
+    public static func makePDF(from urls: [URL]) throws -> (data: Data, photoPages: [Int]) {
         guard !urls.isEmpty else { throw IngestError.empty }
         if urls.count == 1, urls[0].pathExtension.lowercased() == "pdf" {
             guard let data = try? Data(contentsOf: urls[0]), PDFDocument(data: data) != nil else {
                 throw IngestError.unreadable(urls[0].lastPathComponent)
             }
-            return data
+            return (data, [])
         }
+        var photoPages: [Int] = []
         let combined = PDFDocument()
         for url in urls {
             let ext = url.pathExtension.lowercased()
@@ -46,6 +52,7 @@ public enum Ingest {
                 source = PDFDocument(url: url)
             } else if imageExtensions.contains(ext) {
                 source = PDFDocument(data: try ocrPage(imageURL: url))
+                photoPages.append(combined.pageCount)
             } else {
                 throw IngestError.unsupported(url.lastPathComponent)
             }
@@ -57,7 +64,27 @@ public enum Ingest {
             }
         }
         guard combined.pageCount > 0, let data = combined.dataRepresentation() else { throw IngestError.empty }
-        return data
+        return (data, photoPages)
+    }
+
+    /// Re-reads a photo page: renders its picture without annotations and runs it through OCR again.
+    /// Takes and returns single-page PDF data so it can run off the main thread.
+    public static func rereadPhotoPage(_ pageData: Data) throws -> Data {
+        guard let page = PDFDocument(data: pageData)?.page(at: 0) else { throw IngestError.empty }
+        for ann in page.annotations { page.removeAnnotation(ann) }
+        let box = page.bounds(for: .mediaBox)
+        let scale = 2600 / max(box.width, box.height)
+        let w = Int(box.width * scale), h = Int(box.height * scale)
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw IngestError.empty }
+        ctx.setFillColor(.white)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -box.minX, y: -box.minY)
+        page.draw(with: .mediaBox, to: ctx)
+        guard let image = ctx.makeImage() else { throw IngestError.empty }
+        return try ocrPage(image: image)
     }
 
     public static func ocrPage(imageURL: URL) throws -> Data {

@@ -140,9 +140,13 @@ public struct ReadingItem: Codable, Hashable, Identifiable, Sendable {
     public var templateName: String?
     public var templateLayout: NoteLayout?
     public var hasNotes: Bool
+    /// 0-based pages that came from photos (nil for readings saved before this was recorded).
+    public var photoPages: [Int]?
+    public var density: HighlightDensity?
 
     public init(id: UUID, title: String, createdAt: Date, mode: RunMode, model: String, presetName: String?,
-                templateName: String?, templateLayout: NoteLayout?, hasNotes: Bool) {
+                templateName: String?, templateLayout: NoteLayout?, hasNotes: Bool,
+                photoPages: [Int]? = nil, density: HighlightDensity? = nil) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -152,6 +156,8 @@ public struct ReadingItem: Codable, Hashable, Identifiable, Sendable {
         self.templateName = templateName
         self.templateLayout = templateLayout
         self.hasNotes = hasNotes
+        self.photoPages = photoPages
+        self.density = density
     }
 }
 

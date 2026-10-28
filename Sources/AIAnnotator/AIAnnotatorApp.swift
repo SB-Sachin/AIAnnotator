@@ -41,6 +41,17 @@ struct AIAnnotatorApp: App {
                 Button("Export Notes as PDF…") { app.session?.exportNotesPDF() }
                     .disabled(app.session?.notes.isEmpty ?? true)
             }
+            CommandMenu("Reading") {
+                Button("Redo Highlights…") { app.requestRedo(highlights: true) }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(app.session == nil)
+                Button("Redo Notes…") { app.requestRedo(highlights: false) }
+                    .keyboardShortcut("r", modifiers: [.command, .option])
+                    .disabled(app.session == nil)
+                Divider()
+                Button("Undo Last Redo") { app.session?.undoRedo() }
+                    .disabled(app.session == nil)
+            }
         }
 
         Settings {

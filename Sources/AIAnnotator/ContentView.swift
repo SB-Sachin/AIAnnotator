@@ -30,6 +30,14 @@ struct ContentView: View {
         .sheet(item: $app.pending) { run in
             RunSheet(run: run).environmentObject(app).tint(Theme.brand)
         }
+        .background {
+            // A second sheet needs its own host view.
+            Color.clear.sheet(item: $app.redoRequest) { request in
+                if let session = app.session {
+                    RedoSheet(session: session, request: request).environmentObject(app).tint(Theme.brand)
+                }
+            }
+        }
     }
 }
 

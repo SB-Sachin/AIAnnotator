@@ -23,8 +23,8 @@ public struct RawHighlight: Decodable, Hashable {
     public var importance: Int?
 }
 
-public struct PageDigest: Codable, Hashable {
-    public struct Term: Codable, Hashable {
+public struct PageDigest: Codable, Hashable, Sendable {
+    public struct Term: Codable, Hashable, Sendable {
         public var term: String
         public var definition: String
     }

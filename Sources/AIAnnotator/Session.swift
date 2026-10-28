@@ -9,8 +9,8 @@ import UniformTypeIdentifiers
 final class Session: ObservableObject, Identifiable {
     let id: UUID
     let createdAt: Date
-    let model: String
-    let mode: RunMode
+    @Published private(set) var model: String
+    @Published private(set) var mode: RunMode
 
     @Published var title: String
     @Published var document: PDFDocument?
@@ -20,6 +20,12 @@ final class Session: ObservableObject, Identifiable {
     @Published var palette: HighlightPreset
     @Published var templateName: String?
     @Published var templateLayout: NoteLayout?
+    @Published private(set) var density: HighlightDensity
+    /// 0-based photo pages; nil for readings saved before this was recorded.
+    private(set) var photoPages: [Int]?
+    private var digests: [PageDigestEntry] = []
+    /// The state before the last redo, so it can be undone.
+    @Published private(set) var beforeRedo: Snapshot?
 
     @Published var isRunning = false
     @Published var progress: Double = 0
@@ -36,12 +42,34 @@ final class Session: ObservableObject, Identifiable {
     private var task: Task<Void, Never>?
     private let store = LibraryStore()
 
+    struct Snapshot {
+        var pdf: Data
+        var notes: String
+        var mode: RunMode
+        var model: String
+        var palette: HighlightPreset
+        var density: HighlightDensity
+        var templateName: String?
+        var templateLayout: NoteLayout?
+        var digests: [PageDigestEntry]
+    }
+
+    /// One pass over the reading: highlights, notes, or both.
+    struct Job {
+        var highlights: Bool
+        var notes: Bool
+        var options: RunOptions
+        /// Run photo pages through OCR again first (fixes readings imported before the photo fix).
+        var rereadPhotos = false
+    }
+
     init(urls: [URL], options: RunOptions) {
         id = UUID()
         createdAt = Date()
         model = options.model
         mode = options.mode
         palette = options.preset
+        density = options.density
         let first = urls[0].deletingPathExtension().lastPathComponent
         title = urls.count > 1 && urls[0].pathExtension.lowercased() != "pdf" ? "\(first) (+\(urls.count - 1) pages)" : first
         if options.mode.wantsNotes {
@@ -57,34 +85,75 @@ final class Session: ObservableObject, Identifiable {
         mode = item.mode
         title = item.title
         palette = preset
+        density = item.density ?? .balanced
+        photoPages = item.photoPages
         templateName = item.templateName
         templateLayout = item.templateLayout
         document = PDFDocument(url: store.pdfURL(for: item.id))
         notes = store.loadNotes(for: item.id) ?? ""
+        digests = store.loadDigests(for: item.id)
         dirty = false
         annotationsChanged(markDirty: false)
     }
 
     var showsNotes: Bool { mode.wantsNotes || !notes.isEmpty }
+    /// Notes can be rewritten from saved page digests without reading every page again.
+    var hasSavedDigests: Bool { !digests.isEmpty && digests.count == document?.pageCount }
 
     // MARK: Running
 
     func start(urls: [URL], options: RunOptions, client: OllamaClient) {
+        run("Preparing pages…") { [weak self] in
+            let (data, photos) = try await Task.detached(priority: .userInitiated) {
+                try Ingest.makePDF(from: urls)
+            }.value
+            guard let self else { return }
+            guard let doc = PDFDocument(data: data) else { throw IngestError.unreadable(self.title) }
+            self.document = doc
+            self.photoPages = photos
+            try await self.perform(Job(highlights: options.mode.wantsHighlights, notes: options.mode.wantsNotes,
+                                       options: options), client: client)
+        }
+    }
+
+    /// Redoes the highlights or the notes with new options. The previous version can be restored with `undoRedo()`.
+    func redo(_ job: Job, client: OllamaClient) {
+        guard let document, let pdf = document.dataRepresentation() else { return }
+        beforeRedo = Snapshot(pdf: pdf, notes: notes, mode: mode, model: model, palette: palette, density: density,
+                              templateName: templateName, templateLayout: templateLayout, digests: digests)
+        selectedAnnotation = nil
+        run(job.highlights ? "Redoing highlights…" : "Redoing notes…") { [weak self] in
+            try await self?.perform(job, client: client)
+        }
+    }
+
+    func undoRedo() {
+        guard let s = beforeRedo, !isRunning else { return }
+        document = PDFDocument(data: s.pdf)
+        notes = s.notes
+        mode = s.mode
+        model = s.model
+        palette = s.palette
+        density = s.density
+        templateName = s.templateName
+        templateLayout = s.templateLayout
+        digests = s.digests
+        beforeRedo = nil
+        selectedAnnotation = nil
+        status = "Restored the previous version"
+        annotationsChanged()
+        save()
+    }
+
+    private func run(_ startStatus: String, _ body: @escaping @MainActor () async throws -> Void) {
         isRunning = true
-        status = "Preparing pages…"
+        errorMessage = nil
+        progress = 0
+        missedHighlights = 0
+        status = startStatus
         task = Task { [weak self] in
             do {
-                let data = try await Task.detached(priority: .userInitiated) {
-                    try Ingest.makePDFData(from: urls)
-                }.value
-                guard let self else { return }
-                guard let doc = PDFDocument(data: data) else { throw IngestError.unreadable(self.title) }
-                self.document = doc
-                try await self.process(doc, options: options, client: client)
-                let count = self.entries.count
-                self.status = options.mode.wantsHighlights
-                    ? "Done · \(count) highlight\(count == 1 ? "" : "s") on \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s")"
-                    : "Done"
+                try await body()
             } catch {
                 guard let self else { return }
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
@@ -105,52 +174,101 @@ final class Session: ObservableObject, Identifiable {
         task?.cancel()
     }
 
-    private func process(_ doc: PDFDocument, options: RunOptions, client: OllamaClient) async throws {
+    private func perform(_ job: Job, client: OllamaClient) async throws {
+        guard let doc = document else { return }
+        let options = job.options
+        model = options.model
+        if job.highlights {
+            palette = options.preset
+            density = options.density
+            mode = mode.wantsNotes || job.notes ? .both : .annotations
+        }
+        if job.notes {
+            templateName = options.template.name
+            templateLayout = options.template.layout
+            mode = mode.wantsHighlights || job.highlights ? .both : .notes
+        }
+
         let count = doc.pageCount
-        let steps = Double(count + (options.mode.wantsNotes ? 1 : 0))
-        let vision = await client.supportsVision(model: options.model)
-        var digests: [(page: Int, digest: PageDigest)] = []
+        // Notes are written from page digests; reuse saved ones unless every page is being read anyway.
+        let needsDigests = job.notes && (job.highlights || digests.count != count)
+        if needsDigests { digests = [] }
+        let readsPages = job.highlights || needsDigests
+        let steps = Double((readsPages ? count : 0) + (job.notes ? 1 : 0))
+        let vision = readsPages ? await client.supportsVision(model: options.model) : false
 
-        for i in 0..<count {
-            try Task.checkCancellation()
-            guard let page = doc.page(at: i) else { continue }
-            status = "Reading page \(i + 1) of \(count)…"
-            progress = Double(i) / steps
-            let text = page.string ?? ""
-            if !options.mode.wantsNotes && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+        if readsPages {
+            for i in 0..<count {
+                try Task.checkCancellation()
+                guard var page = doc.page(at: i) else { continue }
+                status = "Reading page \(i + 1) of \(count)…"
+                progress = Double(i) / steps
 
-            let sentences = PageSentences(text)
-            let req = PromptBuilder.pageRequest(mode: options.mode, preset: options.preset, density: options.density,
-                                                sentences: sentences, pageNumber: i + 1, pageCount: count)
-            let images = vision ? Ingest.pageImage(page).map { [$0] } ?? [] : []
-            let result = try await client.chat(model: options.model, system: req.system, user: req.user,
-                                               images: images, schema: req.schema, numCtx: req.numCtx,
-                                               as: PageResult.self)
-            if options.mode.wantsHighlights, let highlights = result.highlights {
-                let placement = PDFHighlighter.place(highlights, on: page, preset: options.preset,
-                                                     density: options.density, sentences: sentences)
-                missedHighlights += placement.missed.count
-                pdfView?.annotationsChanged(on: page)
+                if job.rereadPhotos, photoPages?.contains(i) ?? true, let fresh = try await reread(page) {
+                    doc.removePage(at: i)
+                    doc.insert(fresh, at: i)
+                    page = fresh
+                    pdfView?.layoutDocumentView()
+                }
+                if job.highlights {
+                    PDFHighlighter.removeGenerated(on: page)
+                    pdfView?.annotationsChanged(on: page)
+                }
+
+                let text = page.string ?? ""
+                if !needsDigests && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+                let sentences = PageSentences(text)
+                let pageMode: RunMode = job.highlights && needsDigests ? .both : job.highlights ? .annotations : .notes
+                let req = PromptBuilder.pageRequest(mode: pageMode, preset: options.preset, density: options.density,
+                                                    sentences: sentences, pageNumber: i + 1, pageCount: count)
+                let images = vision ? Ingest.pageImage(page).map { [$0] } ?? [] : []
+                let result = try await client.chat(model: options.model, system: req.system, user: req.user,
+                                                   images: images, schema: req.schema, numCtx: req.numCtx,
+                                                   as: PageResult.self)
+                if job.highlights, let highlights = result.highlights {
+                    let placement = PDFHighlighter.place(highlights, on: page, preset: options.preset,
+                                                         density: options.density, sentences: sentences)
+                    missedHighlights += placement.missed.count
+                    pdfView?.annotationsChanged(on: page)
+                }
+                if let digest = result.digest { digests.append(PageDigestEntry(page: i + 1, digest: digest)) }
                 annotationsChanged(markDirty: false)
             }
-            if let digest = result.digest { digests.append((i + 1, digest)) }
         }
 
-        guard options.mode.wantsNotes else { return }
-        try Task.checkCancellation()
-        status = "Writing \(options.template.name)…"
-        progress = Double(count) / steps
-        let req = PromptBuilder.notesRequest(template: options.template, title: title, digests: digests)
-        switch options.template.layout {
-        case .cornell:
-            let n = try await client.chat(model: options.model, system: req.system, user: req.user,
-                                          schema: req.schema, numCtx: req.numCtx, as: CornellNotes.self)
-            notes = NotesFormatter.markdown(n)
-        case .sections:
-            let n = try await client.chat(model: options.model, system: req.system, user: req.user,
-                                          schema: req.schema, numCtx: req.numCtx, as: SectionNotes.self)
-            notes = NotesFormatter.markdown(n)
+        if job.notes {
+            try Task.checkCancellation()
+            status = "Writing \(options.template.name)…"
+            progress = readsPages ? Double(count) / steps : 0.5
+            let req = PromptBuilder.notesRequest(template: options.template, title: title,
+                                                 digests: digests.map { ($0.page, $0.digest) })
+            switch options.template.layout {
+            case .cornell:
+                let n = try await client.chat(model: options.model, system: req.system, user: req.user,
+                                              schema: req.schema, numCtx: req.numCtx, as: CornellNotes.self)
+                notes = NotesFormatter.markdown(n)
+            case .sections:
+                let n = try await client.chat(model: options.model, system: req.system, user: req.user,
+                                              schema: req.schema, numCtx: req.numCtx, as: SectionNotes.self)
+                notes = NotesFormatter.markdown(n)
+            }
         }
+
+        annotationsChanged(markDirty: false)
+        let highlightCount = entries.count
+        status = job.highlights
+            ? "Done · \(highlightCount) highlight\(highlightCount == 1 ? "" : "s") on \(count) page\(count == 1 ? "" : "s")"
+            : "Notes ready"
+    }
+
+    /// OCRs a photo page again off the main thread.
+    private func reread(_ page: PDFPage) async throws -> PDFPage? {
+        let single = PDFDocument()
+        guard let copy = page.copy() as? PDFPage else { return nil }
+        single.insert(copy, at: 0)
+        guard let data = single.dataRepresentation() else { return nil }
+        let fresh = try await Task.detached(priority: .userInitiated) { try Ingest.rereadPhotoPage(data) }.value
+        return PDFDocument(data: fresh)?.page(at: 0)
     }
 
     // MARK: Saving
@@ -159,9 +277,11 @@ final class Session: ObservableObject, Identifiable {
         guard let document else { return }
         let item = ReadingItem(id: id, title: title, createdAt: createdAt, mode: mode, model: model,
                                presetName: palette.name, templateName: templateName,
-                               templateLayout: templateLayout, hasNotes: !notes.isEmpty)
+                               templateLayout: templateLayout, hasNotes: !notes.isEmpty,
+                               photoPages: photoPages, density: density)
         do {
             try store.save(item, pdfData: document.dataRepresentation(), notes: notes.isEmpty ? nil : notes)
+            try store.saveDigests(digests, for: id)
             dirty = false
             onSaved?()
         } catch {
@@ -180,7 +300,8 @@ final class Session: ObservableObject, Identifiable {
         guard let selection = pdfView?.currentSelection else { return }
         var added: PDFAnnotation?
         for page in selection.pages {
-            added = PDFHighlighter.highlight(selection, on: page, color: category.color, contents: category.name) ?? added
+            added = PDFHighlighter.highlight(selection, on: page, color: category.color, contents: category.name,
+                                             manual: true) ?? added
             pdfView?.annotationsChanged(on: page)
         }
         pdfView?.clearSelection()

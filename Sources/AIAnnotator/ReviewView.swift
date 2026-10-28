@@ -47,6 +47,7 @@ struct ReviewView: View {
 }
 
 struct ReviewHeader: View {
+    @EnvironmentObject private var app: AppModel
     @ObservedObject var session: Session
 
     private var subtitle: String {
@@ -67,6 +68,25 @@ struct ReviewHeader: View {
             if session.dirty && !session.isRunning {
                 Text("Unsaved").font(.caption).foregroundStyle(.tertiary)
             }
+            Menu {
+                Button(session.entries.isEmpty ? "Add Highlights…" : "Redo Highlights…") { app.requestRedo(highlights: true) }
+                Button(session.notes.isEmpty ? "Add Notes…" : "Redo Notes…") { app.requestRedo(highlights: false) }
+                if session.beforeRedo != nil {
+                    Divider()
+                    Button("Undo Last Redo") { session.undoRedo() }
+                }
+            } label: {
+                Label("Redo", systemImage: "arrow.clockwise")
+                    .font(.system(size: 12.5, weight: .medium, design: .rounded))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Color.primary.opacity(0.05), in: Capsule())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(session.isRunning || session.document == nil)
+            .help("Redo the highlights or notes with different options")
             Button { session.save() } label: { Label("Save", systemImage: "checkmark") }
                 .buttonStyle(SoftButtonStyle())
                 .disabled(session.isRunning || !session.dirty)
@@ -120,6 +140,9 @@ struct StatusPill: View {
                 pill {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     Text(session.status)
+                    if session.beforeRedo != nil {
+                        Button("Undo") { session.undoRedo() }.buttonStyle(SoftButtonStyle())
+                    }
                     Button { session.status = "" } label: { Image(systemName: "xmark") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                 }
@@ -185,6 +208,10 @@ struct Inspector: View {
         .background(Theme.canvas)
         .onChange(of: session.selectedAnnotation) { _, ann in
             if ann != nil { tab = .highlights }
+        }
+        .onChange(of: session.templateName) { _, name in
+            // Rewriting the notes (a redo or an undo) shows them.
+            if name != nil { tab = .notes }
         }
     }
 }
