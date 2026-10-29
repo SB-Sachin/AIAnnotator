@@ -67,10 +67,7 @@ public enum QuoteMatcher {
 
     public static func find(_ quote: String, in text: String) -> NSRange? {
         let page = normalize(text)
-        var q = normalize(quote).chars
-        // Models sometimes wrap quotes in quotation marks or end with stray punctuation.
-        while let f = q.first, "\"'".contains(f) { q.removeFirst() }
-        while let l = q.last, "\"'".contains(l) { q.removeLast() }
+        let q = normalize(quote).chars
         guard q.count >= 3, !page.chars.isEmpty else { return nil }
 
         if let i = indexOf(q, in: page.chars, from: 0) {
